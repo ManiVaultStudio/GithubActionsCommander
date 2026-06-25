@@ -1,0 +1,17 @@
+organization: ManiVaultStudio
+workflow: build.yml
+default_branch: feature/core_revamp_archiving/revamp_archiving
+
+# Prefer the GITHUB_TOKEN environment variable.
+token: ""
+
+repo_type: all
+include_archived: false
+poll_interval_seconds: 5
+api_concurrency: 8
+
+stale_check:
+  repository: ManiVaultStudio/core
+  branch: ci
+  base_branch: master
+  workflow: build.yml
