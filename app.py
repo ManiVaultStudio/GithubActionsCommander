@@ -51,7 +51,8 @@ COL_EFFECTIVE_BRANCH = 3
 COL_BRANCH = 4
 COL_WORKFLOW = 5
 COL_RUN = 6
-COL_STATUS = 7
+COL_CI_STATUS = 7
+COL_STATUS = 8
 
 
 class MainWindow(QMainWindow):
@@ -144,7 +145,7 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(form_widget, 1)
         controls_layout.addWidget(buttons_widget)
 
-        self.table = QTableWidget(0, 8)
+        self.table = QTableWidget(0, 9)
         self.table.setHorizontalHeaderLabels([
             "Run",
             "Repository",
@@ -153,6 +154,7 @@ class MainWindow(QMainWindow):
             "Branch",
             "Workflow",
             "Run ID",
+            "Latest CI",
             "Status",
         ])
         self.table.setSortingEnabled(False)
@@ -174,6 +176,7 @@ class MainWindow(QMainWindow):
         self.table.setColumnWidth(COL_BRANCH, 70)
         self.table.setColumnWidth(COL_WORKFLOW, 80)
         self.table.setColumnWidth(COL_RUN, 130)
+        self.table.setColumnWidth(COL_CI_STATUS, 120)
         self.table.setColumnWidth(COL_STATUS, 120)
 
         self.details = QTextEdit()
@@ -347,6 +350,12 @@ class MainWindow(QMainWindow):
         run.setData(Qt.UserRole, row)
         self.table.setItem(row, COL_RUN, run)
 
+        ci_status = QTableWidgetItem(repo.ci_status)
+        ci_status.setFlags(ci_status.flags() & ~Qt.ItemIsEditable)
+        ci_status.setData(Qt.UserRole, row)
+        self._apply_status_color(ci_status, repo.ci_status)
+        self.table.setItem(row, COL_CI_STATUS, ci_status)
+
         status = QTableWidgetItem(repo.status)
         status.setFlags(status.flags() & ~Qt.ItemIsEditable)
         status.setData(Qt.UserRole, row)
@@ -358,9 +367,9 @@ class MainWindow(QMainWindow):
 
         if normalized in {"ok", "success", "ready"}:
             item.setForeground(QColor("#2e7d32"))
-        elif normalized in {"missing", "failure", "failed", "invalid", "error", "poll failed"}:
+        elif normalized in {"missing", "failure", "failed", "invalid", "error", "poll failed", "ci poll failed", "ci lookup failed"}:
             item.setForeground(QColor("#c62828"))
-        elif normalized in {"queued", "in_progress", "waiting for run", "dispatching", "validating", "checking branch", "resolving workflow"}:
+        elif normalized in {"queued", "in_progress", "waiting for run", "dispatching", "validating", "checking branch", "resolving workflow", "run not visible yet"}:
             item.setForeground(QColor("#ef6c00"))
 
     def update_repo_row(self, repo: RepoState) -> None:
@@ -476,6 +485,9 @@ class MainWindow(QMainWindow):
             f"Workflow: {repo.workflow_name or repo.workflow_path}\\n"
             f"Run ID: {repo.run_id or ''}\\n"
             f"Run URL: {repo.run_url}\\n"
+            f"Latest CI: {repo.ci_status}\\n"
+            f"CI updated: {repo.ci_updated_at}\\n"
+            f"CI SHA: {repo.ci_head_sha}\\n"
             f"Status: {repo.status}\\n"
             f"Error: {repo.last_error}"
         )
@@ -621,19 +633,37 @@ class MainWindow(QMainWindow):
         if not self.client:
             return
 
-        tracked = [repo for repo in self.repos if repo.run_id is not None]
+        # Prefer selected repos. If none are selected, poll visible repos. This allows
+        # "Validate visible" + "Poll once" after reopening the app to discover the latest
+        # existing CI run, even if the app did not dispatch it.
+        tracked = self.selected_repos()
         if not tracked:
-            self.set_status("No workflow runs to poll.")
+            tracked = [self.repos[i] for i in self.visible_repo_indices()]
+
+        if not tracked:
+            self.set_status("No repositories to poll.")
+            return
+
+        workflow = self.workflow_edit.text().strip()
+        if not workflow:
+            QMessageBox.warning(self, "Missing workflow", "Please enter a workflow name, path or filename.")
             return
 
         if self.poll_worker and not once:
             self.set_status("Polling already running.")
             return
 
-        self.set_status("Polling workflow runs...")
-        worker = PollRunsWorker(self.config, tracked, once=once)
+        self.set_status(f"Polling CI status for {len(tracked)} repositories...")
+        worker = PollRunsWorker(
+            self.config,
+            tracked,
+            workflow,
+            self.branch_edit.text().strip(),
+            once=once,
+            continuous_dashboard=True,
+        )
         worker.repo_updated.connect(self.update_repo_row)
-        worker.finished.connect(lambda: self.set_status("Polling finished." if not once else "Poll finished."))
+        worker.finished.connect(lambda: self.set_status("Polling stopped." if not once else "Poll finished."))
 
         if once:
             self.run_worker(worker)

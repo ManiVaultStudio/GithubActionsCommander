@@ -99,6 +99,27 @@ class ValidateReposWorker(WorkerBase):
                         repo.workflow_exists = None
 
                     repo.status = "Ready" if repo.branch_exists and (repo.workflow_exists or not self.workflow) else "Invalid"
+
+                    # Validation only means branch/workflow are usable. It does not mean CI passed.
+                    # Also discover the latest workflow run so the CI status column is meaningful
+                    # after reopening the app or validating existing branches.
+                    if repo.branch_exists and repo.workflow_exists and repo.workflow_id is not None:
+                        try:
+                            run = client.latest_workflow_run(repo.full_name, workflow, repo.resolved_branch or repo.effective_branch(self.global_branch))
+                            if run:
+                                repo.run_id = run.id
+                                repo.run_url = run.html_url
+                                repo.ci_status = run.display_status
+                                repo.ci_updated_at = run.updated_at
+                                repo.ci_head_sha = run.head_sha
+                            else:
+                                repo.ci_status = "No runs"
+                                repo.ci_updated_at = ""
+                                repo.ci_head_sha = ""
+                        except Exception as exc:
+                            repo.ci_status = "CI lookup failed"
+                            repo.last_error = str(exc)
+
                     self.repo_updated.emit(repo)
 
                 except Exception as exc:
@@ -175,6 +196,7 @@ class DispatchReposWorker(WorkerBase):
                     self.log.emit(f"{repo.full_name}: dispatched {workflow.path} on {resolved_branch}")
 
                     repo.status = "Waiting for run"
+                    repo.ci_status = "Waiting for run"
                     self.repo_updated.emit(repo)
 
                     for _ in range(15):
@@ -183,13 +205,17 @@ class DispatchReposWorker(WorkerBase):
                         if run:
                             repo.run_id = run.id
                             repo.run_url = run.html_url
-                            repo.status = run.display_status
+                            repo.status = "Dispatched"
+                            repo.ci_status = run.display_status
+                            repo.ci_updated_at = run.updated_at
+                            repo.ci_head_sha = run.head_sha
                             self.log.emit(f"{repo.full_name}: run {run.id} is {run.display_status}")
                             self.repo_updated.emit(repo)
                             break
 
                     if not repo.run_id:
                         repo.status = "Dispatched"
+                        repo.ci_status = "Run not visible yet"
                         self.repo_updated.emit(repo)
                         self.log.emit(f"{repo.full_name}: dispatched, but run is not visible yet.")
 
@@ -210,10 +236,21 @@ class DispatchReposWorker(WorkerBase):
 class PollRunsWorker(WorkerBase):
     repo_updated = Signal(object)
 
-    def __init__(self, config: AppConfig, repos: list[RepoState], once: bool = False) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        repos: list[RepoState],
+        workflow: str,
+        global_branch: str,
+        once: bool = False,
+        continuous_dashboard: bool = True,
+    ) -> None:
         super().__init__(config)
         self.repos = repos
+        self.workflow = workflow
+        self.global_branch = global_branch
         self.once = once
+        self.continuous_dashboard = continuous_dashboard
         self._cancelled = False
 
     def cancel(self) -> None:
@@ -227,32 +264,86 @@ class PollRunsWorker(WorkerBase):
             client = self.make_client()
 
             while not self._cancelled:
-                active = False
+                any_active = False
 
                 for repo in self.repos:
-                    if repo.run_id is None:
-                        continue
-
                     try:
-                        previous = repo.status
-                        run = client.get_workflow_run(repo.full_name, repo.run_id)
-                        repo.status = run.display_status
-                        repo.run_url = run.html_url
+                        branch = repo.resolved_branch or repo.effective_branch(self.global_branch)
+
+                        if not branch:
+                            repo.ci_status = "No branch"
+                            self.repo_updated.emit(repo)
+                            continue
+
+                        workflow = None
+
+                        if repo.workflow_id is not None:
+                            workflow = type("WorkflowRef", (), {
+                                "id": repo.workflow_id,
+                                "name": repo.workflow_name,
+                                "path": repo.workflow_path,
+                                "state": "",
+                            })()
+                        elif self.workflow:
+                            workflow = client.resolve_workflow(repo.full_name, self.workflow)
+                            repo.workflow_exists = True
+                            repo.workflow_id = workflow.id
+                            repo.workflow_name = workflow.name
+                            repo.workflow_path = workflow.path
+
+                        if not workflow:
+                            repo.ci_status = "No workflow"
+                            self.repo_updated.emit(repo)
+                            continue
+
+                        # Always rediscover the latest run for this workflow+branch.
+                        # This fixes two problems:
+                        # 1. reopening the app and polling now discovers already existing failed/successful runs;
+                        # 2. rerunning CI on GitHub creates a newer run, and the app switches to it automatically.
+                        latest = client.latest_workflow_run(repo.full_name, workflow, branch)
+
+                        if not latest:
+                            repo.ci_status = "No runs"
+                            repo.run_id = None
+                            repo.run_url = ""
+                            self.repo_updated.emit(repo)
+                            continue
+
+                        previous_run_id = repo.run_id
+                        previous_ci_status = repo.ci_status
+
+                        repo.run_id = latest.id
+                        repo.run_url = latest.html_url
+                        repo.ci_status = latest.display_status
+                        repo.ci_updated_at = latest.updated_at
+                        repo.ci_head_sha = latest.head_sha
+
+                        # Keep Status as operational state, not CI result.
+                        if repo.status in {"Idle", "Ready", "Dispatched", "Waiting for run", "Poll failed"}:
+                            repo.status = "Ready" if repo.branch_exists is True and repo.workflow_exists is True else repo.status
+
+                        if latest.display_status not in TERMINAL_RUN_STATES:
+                            any_active = True
+
+                        if previous_run_id != repo.run_id:
+                            self.log.emit(f"{repo.full_name}: tracking latest run {repo.run_id} ({repo.ci_status})")
+                        elif previous_ci_status != repo.ci_status:
+                            self.log.emit(f"{repo.full_name}: CI {previous_ci_status} -> {repo.ci_status}")
+
                         self.repo_updated.emit(repo)
-
-                        if previous != repo.status:
-                            self.log.emit(f"{repo.full_name}: {previous} -> {repo.status}")
-
-                        if repo.status not in TERMINAL_RUN_STATES:
-                            active = True
 
                     except Exception as exc:
-                        repo.status = "Poll failed"
+                        repo.ci_status = "CI poll failed"
                         repo.last_error = self.safe_error(exc)
                         self.repo_updated.emit(repo)
-                        self.log.emit(f"{repo.full_name}: poll failed: {repo.last_error}")
+                        self.log.emit(f"{repo.full_name}: CI poll failed: {repo.last_error}")
 
-                if self.once or not active:
+                if self.once:
+                    break
+
+                # In dashboard mode, keep polling even when everything is currently terminal,
+                # because a user may re-run a workflow in GitHub while the app is open.
+                if not self.continuous_dashboard and not any_active:
                     break
 
                 time.sleep(self.config.poll_interval_seconds)

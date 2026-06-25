@@ -62,6 +62,9 @@ class RepoState:
     run_id: int | None = None
     run_url: str = ""
     status: str = "Idle"
+    ci_status: str = "Unknown"
+    ci_updated_at: str = ""
+    ci_head_sha: str = ""
     last_error: str = ""
 
     def effective_branch(self, global_branch: str) -> str:
