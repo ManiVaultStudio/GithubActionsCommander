@@ -112,3 +112,27 @@ This version separates validation state from CI state.
 - after reopening the app, `Validate visible` + `Poll once` will find an existing failed/successful CI run;
 - if someone re-runs CI in GitHub while the app is open, the app switches to the newer run automatically;
 - polling can be used as a dashboard, not only for runs launched by this app.
+
+
+## v7 thread-affinity fix
+
+This version removes GUI-updating lambdas connected directly to worker-thread signals and replaces them with `@Slot` methods on the main window. This avoids Qt's:
+
+```text
+QObject: Cannot create children for a parent that is in a different thread
+```
+
+The crash was caused by starting follow-up polling from the dispatch worker's thread instead of the GUI thread.
+
+
+## v8 sorting
+
+- Click any column header to sort ascending/descending.
+- Columns are still resizable and movable.
+- Sorting is smart for:
+  - `Latest CI`: failures are sorted before running/queued/success/unknown;
+  - `Status`: error/invalid states sort before ready/idle;
+  - `Run ID`: numeric sorting;
+  - branch/workflow check columns.
+- Sort column and direction are saved with `QSettings`.
+- `Auto-sort during updates` controls whether polling/validation updates immediately reapply the active sort.
