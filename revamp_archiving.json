@@ -1,0 +1,6 @@
+{
+  "organization": "ManiVaultStudio",
+  "workflow": "build.yml",
+  "global_branch": "feature/core_revamp_archiving/revamp_archiving*",
+  "selected_repositories": []
+}

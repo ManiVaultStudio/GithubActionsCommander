@@ -125,14 +125,30 @@ QObject: Cannot create children for a parent that is in a different thread
 The crash was caused by starting follow-up polling from the dispatch worker's thread instead of the GUI thread.
 
 
-## v8 sorting
+## v9 sorting stability
 
-- Click any column header to sort ascending/descending.
-- Columns are still resizable and movable.
-- Sorting is smart for:
-  - `Latest CI`: failures are sorted before running/queued/success/unknown;
-  - `Status`: error/invalid states sort before ready/idle;
-  - `Run ID`: numeric sorting;
-  - branch/workflow check columns.
-- Sort column and direction are saved with `QSettings`.
-- `Auto-sort during updates` controls whether polling/validation updates immediately reapply the active sort.
+This version reverts the custom smart-sort item implementation because it could crash after refresh on some PySide/Qt builds.
+
+Sorting is now handled by Qt's built-in `QTableWidget` sorting:
+
+- click a column header to sort ascending/descending;
+- columns remain resizable and movable;
+- sorting is disabled while rows are being refreshed, then re-enabled;
+- `Auto-sort during updates` controls whether updates reapply the current sort automatically.
+
+This is less fancy than v8's smart sorting, but significantly safer.
+
+
+## v10 validation/sorting fix
+
+This version fixes a table-indexing bug that occurred after sorting.
+
+Older versions used the repository index as if it were the physical table row. After sorting, those are no longer the same. During validation, updates could therefore be written into the wrong rows, leaving some repositories stuck as `Queued validation` or `Validating`.
+
+v10 now:
+
+- stores a stable repository index in each row;
+- finds the current physical table row before updating;
+- temporarily disables auto-sort during validation;
+- restores the previous auto-sort setting after validation;
+- normalizes any rows still marked as active when the worker finishes.

@@ -55,75 +55,6 @@ COL_CI_STATUS = 7
 COL_STATUS = 8
 
 
-CI_SORT_ORDER = {
-    "failure": 0,
-    "failed": 0,
-    "timed_out": 1,
-    "cancelled": 2,
-    "action_required": 3,
-    "ci poll failed": 4,
-    "ci lookup failed": 4,
-    "in_progress": 5,
-    "queued": 6,
-    "waiting for run": 7,
-    "run not visible yet": 8,
-    "success": 9,
-    "skipped": 10,
-    "neutral": 11,
-    "no runs": 12,
-    "unknown": 13,
-    "": 14,
-}
-
-STATUS_SORT_ORDER = {
-    "error": 0,
-    "failed": 1,
-    "missing branch": 2,
-    "invalid": 3,
-    "validating": 4,
-    "queued validation": 5,
-    "checking branch": 6,
-    "resolving workflow": 7,
-    "dispatching": 8,
-    "waiting for run": 9,
-    "dispatched": 10,
-    "ready": 11,
-    "idle": 12,
-    "": 13,
-}
-
-
-class SmartTableWidgetItem(QTableWidgetItem):
-    def __lt__(self, other) -> bool:
-        column = self.column()
-        left = self.text()
-        right = other.text()
-
-        if column == COL_SELECTED:
-            return self.checkState() < other.checkState()
-
-        if column == COL_RUN:
-            def to_int(value: str) -> int:
-                try:
-                    return int(value)
-                except ValueError:
-                    return -1
-
-            return to_int(left) < to_int(right)
-
-        if column == COL_CI_STATUS:
-            return CI_SORT_ORDER.get(left.lower(), 100) < CI_SORT_ORDER.get(right.lower(), 100)
-
-        if column == COL_STATUS:
-            return STATUS_SORT_ORDER.get(left.lower(), 100) < STATUS_SORT_ORDER.get(right.lower(), 100)
-
-        if column in {COL_BRANCH, COL_WORKFLOW}:
-            order = {"missing": 0, "?": 1, "ok": 2}
-            return order.get(left.lower(), 100) < order.get(right.lower(), 100)
-
-        return left.lower() < right.lower()
-
-
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -167,7 +98,7 @@ class MainWindow(QMainWindow):
         self.only_branch_checkbox = QCheckBox("Only repos with global branch/pattern")
         self.only_workflow_checkbox = QCheckBox("Only repos with workflow")
         self.auto_sort_checkbox = QCheckBox("Auto-sort during updates")
-        self.auto_sort_checkbox.setChecked(True)
+        self.auto_sort_checkbox.setChecked(False)
 
         form.addRow("Organization", self.organization_edit)
         form.addRow("Workflow", self.workflow_edit)
@@ -384,12 +315,11 @@ class MainWindow(QMainWindow):
         return self.repos[int(index)]
 
     def populate_table(self) -> None:
-        current = self.current_repo()
-        selected_repo = current.full_name if current else ""
+        self.table.blockSignals(True)
+
         sort_column = self.table.horizontalHeader().sortIndicatorSection()
         sort_order = self.table.horizontalHeader().sortIndicatorOrder()
 
-        self.table.blockSignals(True)
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(self.repos))
 
@@ -397,61 +327,62 @@ class MainWindow(QMainWindow):
             self._populate_row(index, repo)
 
         self.table.setSortingEnabled(True)
+
         if self.auto_sort_checkbox.isChecked():
             self.table.sortItems(sort_column, sort_order)
 
         self.table.blockSignals(False)
         self.apply_filter()
-        self.restore_current_repo(selected_repo)
         self.update_details()
 
     def _populate_row(self, row: int, repo: RepoState) -> None:
-        selected = SmartTableWidgetItem()
+        repo_index = self.repos.index(repo)
+        selected = QTableWidgetItem()
         selected.setFlags(selected.flags() | Qt.ItemIsUserCheckable)
         selected.setCheckState(Qt.Checked if repo.selected else Qt.Unchecked)
-        selected.setData(Qt.UserRole, row)
+        selected.setData(Qt.UserRole, repo_index)
         self.table.setItem(row, COL_SELECTED, selected)
 
-        repository = SmartTableWidgetItem(repo.full_name)
+        repository = QTableWidgetItem(repo.full_name)
         repository.setFlags(repository.flags() & ~Qt.ItemIsEditable)
-        repository.setData(Qt.UserRole, row)
+        repository.setData(Qt.UserRole, repo_index)
         self.table.setItem(row, COL_REPOSITORY, repository)
 
-        override = SmartTableWidgetItem(repo.branch_override)
-        override.setData(Qt.UserRole, row)
+        override = QTableWidgetItem(repo.branch_override)
+        override.setData(Qt.UserRole, repo_index)
         self.table.setItem(row, COL_OVERRIDE, override)
 
-        effective = SmartTableWidgetItem(repo.effective_branch(self.branch_edit.text().strip()))
+        effective = QTableWidgetItem(repo.effective_branch(self.branch_edit.text().strip()))
         effective.setFlags(effective.flags() & ~Qt.ItemIsEditable)
-        effective.setData(Qt.UserRole, row)
+        effective.setData(Qt.UserRole, repo_index)
         self.table.setItem(row, COL_EFFECTIVE_BRANCH, effective)
 
-        branch = SmartTableWidgetItem(repo.branch_label())
+        branch = QTableWidgetItem(repo.branch_label())
         branch.setFlags(branch.flags() & ~Qt.ItemIsEditable)
-        branch.setData(Qt.UserRole, row)
+        branch.setData(Qt.UserRole, repo_index)
         self._apply_status_color(branch, repo.branch_label())
         self.table.setItem(row, COL_BRANCH, branch)
 
-        workflow = SmartTableWidgetItem(repo.workflow_label())
+        workflow = QTableWidgetItem(repo.workflow_label())
         workflow.setFlags(workflow.flags() & ~Qt.ItemIsEditable)
-        workflow.setData(Qt.UserRole, row)
+        workflow.setData(Qt.UserRole, repo_index)
         self._apply_status_color(workflow, repo.workflow_label())
         self.table.setItem(row, COL_WORKFLOW, workflow)
 
-        run = SmartTableWidgetItem(str(repo.run_id or ""))
+        run = QTableWidgetItem(str(repo.run_id or ""))
         run.setFlags(run.flags() & ~Qt.ItemIsEditable)
-        run.setData(Qt.UserRole, row)
+        run.setData(Qt.UserRole, repo_index)
         self.table.setItem(row, COL_RUN, run)
 
-        ci_status = SmartTableWidgetItem(repo.ci_status)
+        ci_status = QTableWidgetItem(repo.ci_status)
         ci_status.setFlags(ci_status.flags() & ~Qt.ItemIsEditable)
-        ci_status.setData(Qt.UserRole, row)
+        ci_status.setData(Qt.UserRole, repo_index)
         self._apply_status_color(ci_status, repo.ci_status)
         self.table.setItem(row, COL_CI_STATUS, ci_status)
 
-        status = SmartTableWidgetItem(repo.status)
+        status = QTableWidgetItem(repo.status)
         status.setFlags(status.flags() & ~Qt.ItemIsEditable)
-        status.setData(Qt.UserRole, row)
+        status.setData(Qt.UserRole, repo_index)
         self._apply_status_color(status, repo.status)
         self.table.setItem(row, COL_STATUS, status)
 
@@ -465,20 +396,30 @@ class MainWindow(QMainWindow):
         elif normalized in {"queued", "in_progress", "waiting for run", "dispatching", "validating", "checking branch", "resolving workflow", "run not visible yet"}:
             item.setForeground(QColor("#ef6c00"))
 
-    def update_repo_row(self, repo: RepoState) -> None:
+    def find_table_row_for_repo(self, repo: RepoState) -> int:
         try:
-            index = self.repos.index(repo)
+            repo_index = self.repos.index(repo)
         except ValueError:
+            return -1
+
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, COL_REPOSITORY)
+            if item is not None and item.data(Qt.UserRole) == repo_index:
+                return row
+
+        return -1
+
+    def update_repo_row(self, repo: RepoState) -> None:
+        table_row = self.find_table_row_for_repo(repo)
+        if table_row < 0:
             return
 
-        current = self.current_repo()
-        selected_repo = current.full_name if current else ""
         sort_column = self.table.horizontalHeader().sortIndicatorSection()
         sort_order = self.table.horizontalHeader().sortIndicatorOrder()
 
         self.table.blockSignals(True)
         self.table.setSortingEnabled(False)
-        self._populate_row(index, repo)
+        self._populate_row(table_row, repo)
         self.table.setSortingEnabled(True)
 
         if self.auto_sort_checkbox.isChecked():
@@ -486,7 +427,6 @@ class MainWindow(QMainWindow):
 
         self.table.blockSignals(False)
         self.apply_filter()
-        self.restore_current_repo(selected_repo)
         self.update_details()
 
     def on_item_changed(self, item: QTableWidgetItem) -> None:
@@ -573,16 +513,6 @@ class MainWindow(QMainWindow):
                 hint_parts.append(f"{unknown_workflow_count} workflow checks unknown; click Validate visible first")
             self.set_status(". ".join(hint_parts) + ".")
 
-    def restore_current_repo(self, full_name: str) -> None:
-        if not full_name:
-            return
-
-        for row in range(self.table.rowCount()):
-            item = self.table.item(row, COL_REPOSITORY)
-            if item and item.text() == full_name:
-                self.table.selectRow(row)
-                return
-
     def update_details(self) -> None:
         repo = self.current_repo()
 
@@ -620,6 +550,17 @@ class MainWindow(QMainWindow):
     def on_validation_finished(self) -> None:
         self.progress_bar.setVisible(False)
         self.mark_stuck_validating_idle()
+
+        if hasattr(self, "_auto_sort_before_validation"):
+            self.auto_sort_checkbox.setChecked(bool(self._auto_sort_before_validation))
+
+        if self.auto_sort_checkbox.isChecked():
+            self.table.sortItems(
+                self.table.horizontalHeader().sortIndicatorSection(),
+                self.table.horizontalHeader().sortIndicatorOrder(),
+            )
+
+        self.apply_filter()
         self.set_status("Validation finished.")
 
     @Slot(str)
@@ -718,6 +659,9 @@ class MainWindow(QMainWindow):
             self.set_status("No visible repositories.")
             return
 
+        self._auto_sort_before_validation = self.auto_sort_checkbox.isChecked()
+        self.auto_sort_checkbox.setChecked(False)
+
         for repo in repos:
             repo.status = "Queued validation"
             self.update_repo_row(repo)
@@ -738,10 +682,16 @@ class MainWindow(QMainWindow):
         self.run_worker(worker)
 
     def mark_stuck_validating_idle(self) -> None:
+        fixed = 0
+
         for repo in self.repos:
             if repo.status in {"Validating", "Queued validation"}:
                 repo.status = "Ready" if repo.branch_exists is True and (repo.workflow_exists is True or not self.workflow_edit.text().strip()) else "Invalid"
                 self.update_repo_row(repo)
+                fixed += 1
+
+        if fixed:
+            self.log_message(f"Validation finished with {fixed} rows still marked as active; normalized their status.")
 
     def run_selected(self) -> None:
         if not self.client:
